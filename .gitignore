@@ -1,0 +1,8 @@
+logs/
+.ipynb_checkpoints/
+data/
+models/
+*.safetensors
+*.pth
+test_trainer/
+*.pt
