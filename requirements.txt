@@ -1,0 +1,10 @@
+transformers[torch]
+datasets
+numpy
+torch
+scikit-learn
+accelerate
+evaluate
+tf-keras
+ipykernel
+optimum-quanto
