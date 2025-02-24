@@ -8,3 +8,7 @@ evaluate
 tf-keras
 ipykernel
 optimum-quanto
+trl
+optimum-intel
+neural-compressor
+optimum[neural-compressor]
