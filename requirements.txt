@@ -12,3 +12,4 @@ trl
 optimum-intel
 neural-compressor
 optimum[neural-compressor]
+safetensors
