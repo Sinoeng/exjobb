@@ -28,11 +28,11 @@ from torch.nn import BCEWithLogitsLoss, CrossEntropyLoss, MSELoss
 
 import torch.nn.functional as F
 
-from ...activations import get_activation
-from ...configuration_utils import PretrainedConfig
-from ...integrations.deepspeed import is_deepspeed_zero3_enabled
-from ...modeling_attn_mask_utils import _prepare_4d_attention_mask_for_sdpa
-from ...modeling_outputs import (
+from transformers.activations import get_activation
+from transformers.configuration_utils import PretrainedConfig
+from transformers.integrations.deepspeed import is_deepspeed_zero3_enabled
+from transformers.modeling_attn_mask_utils import _prepare_4d_attention_mask_for_sdpa
+from transformers.modeling_outputs import (
     BaseModelOutput,
     MaskedLMOutput,
     MultipleChoiceModelOutput,
@@ -40,14 +40,14 @@ from ...modeling_outputs import (
     SequenceClassifierOutput,
     TokenClassifierOutput,
 )
-from ...modeling_utils import PreTrainedModel
-from ...pytorch_utils import (
+from transformers.modeling_utils import PreTrainedModel
+from transformers.pytorch_utils import (
     apply_chunking_to_forward,
     find_pruneable_heads_and_indices,
     is_torch_greater_or_equal_than_2_2,
     prune_linear_layer,
 )
-from ...utils import (
+from transformers.utils import (
     add_code_sample_docstrings,
     add_start_docstrings,
     add_start_docstrings_to_model_forward,
@@ -56,11 +56,11 @@ from ...utils import (
     logging,
     replace_return_docstrings,
 )
-from .configuration_distilbert import DistilBertConfig
+from transformers import DistilBertConfig
 
 
 if is_flash_attn_2_available():
-    from ...modeling_flash_attention_utils import _flash_attention_forward
+    from transformers.modeling_flash_attention_utils import _flash_attention_forward
 
 
 logger = logging.get_logger(__name__)
@@ -136,7 +136,139 @@ class Embeddings(nn.Module):
         return embeddings
 
 
-class MultiHeadSelfAttention(nn.Module):
+# class MultiHeadSelfAttention(nn.Module):
+#     def __init__(self, config: PretrainedConfig):
+#         super().__init__()
+#         self.config = config
+
+#         self.n_heads = config.n_heads
+#         self.dim = config.dim
+#         self.dropout = nn.Dropout(p=config.attention_dropout)
+#         self.is_causal = False
+
+#         # Have an even number of multi heads that divide the dimensions
+#         if self.dim % self.n_heads != 0:
+#             # Raise value errors for even multi-head attention nodes
+#             raise ValueError(f"self.n_heads: {self.n_heads} must divide self.dim: {self.dim} evenly")
+
+#         self.q_lin = nn.Linear(in_features=config.dim, out_features=config.dim)
+#         self.k_lin = nn.Linear(in_features=config.dim, out_features=config.dim)
+#         self.v_lin = nn.Linear(in_features=config.dim, out_features=config.dim)
+#         self.out_lin = nn.Linear(in_features=config.dim, out_features=config.dim)
+
+#         self.gamma = 1
+#         self.delta = 1
+#         self.eta = 1
+
+#         self.pruned_heads: Set[int] = set()
+#         self.attention_head_size = self.dim // self.n_heads
+
+#     def prune_heads(self, heads: List[int]):
+#         if len(heads) == 0:
+#             return
+#         heads, index = find_pruneable_heads_and_indices(
+#             heads, self.n_heads, self.attention_head_size, self.pruned_heads
+#         )
+#         # Prune linear layers
+#         self.q_lin = prune_linear_layer(self.q_lin, index)
+#         self.k_lin = prune_linear_layer(self.k_lin, index)
+#         self.v_lin = prune_linear_layer(self.v_lin, index)
+#         self.out_lin = prune_linear_layer(self.out_lin, index, dim=1)
+#         # Update hyper params
+#         self.n_heads = self.n_heads - len(heads)
+#         self.dim = self.attention_head_size * self.n_heads
+#         self.pruned_heads = self.pruned_heads.union(heads)
+
+#     def compute_relu_attention(self, scores: torch.Tensor, mask: torch.Tensor, 
+#                                head_mask: Optional[torch.Tensor], v: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+#         scores = F.relu(scores)
+#         weights = scores
+#         M = torch.max(torch.maximum(v, -v)) + 1
+#         mask = self.dropout(mask.to(scores.dtype))
+#         mask = (mask == 0).unsqueeze(1).unsqueeze(2)
+#         scores = scores.masked_fill(mask, M)
+#         v_t = v.transpose(-1, -2)
+        
+#         if head_mask is not None:
+#             weights = weights * head_mask
+        
+#         context = self.compute_signed_inhibitor(scores, v, v_t)
+
+#         return context, weights
+    
+#     def compute_signed_inhibitor(self, scores: torch.Tensor, v: torch.Tensor, v_t: torch.Tensor) -> torch.Tensor:
+#         pos_v = F.relu(v_t)
+#         neg_v = -F.relu(-v_t)
+#         v_sum = torch.sum(v, dim=-2, keepdim=True)
+#         dist1 = torch.cdist(scores, pos_v, p=1)
+#         dist2 = torch.cdist(scores, -neg_v, p=1)
+#         return 0.5 * (v_sum + dist1 - dist2)
+
+#     def forward(
+#         self,
+#         query: torch.Tensor,
+#         key: torch.Tensor,
+#         value: torch.Tensor,
+#         mask: torch.Tensor,
+#         head_mask: Optional[torch.Tensor] = None,
+#         output_attentions: bool = False,
+#     ) -> Tuple[torch.Tensor, ...]:
+#         """
+#         Parameters:
+#             query: torch.tensor(bs, seq_length, dim)
+#             key: torch.tensor(bs, seq_length, dim)
+#             value: torch.tensor(bs, seq_length, dim)
+#             mask: torch.tensor(bs, seq_length)
+
+#         Returns:
+#             weights: torch.tensor(bs, n_heads, seq_length, seq_length) Attention weights context: torch.tensor(bs,
+#             seq_length, dim) Contextualized layer. Optional: only if `output_attentions=True`
+#         """
+#         bs, q_length, dim = query.size()
+#         k_length = key.size(1)
+#         # assert dim == self.dim, f'Dimensions do not match: {dim} input vs {self.dim} configured'
+#         # assert key.size() == value.size()
+
+#         dim_per_head = self.dim // self.n_heads
+
+#         mask_reshp = (bs, 1, 1, k_length)
+
+#         def shape(x: torch.Tensor) -> torch.Tensor:
+#             """separate heads"""
+#             return x.view(bs, -1, self.n_heads, dim_per_head).transpose(1, 2)
+
+#         def unshape(x: torch.Tensor) -> torch.Tensor:
+#             """group heads"""
+#             return x.transpose(1, 2).contiguous().view(bs, -1, self.n_heads * dim_per_head)
+
+#         q = shape(self.q_lin(query))  # (bs, n_heads, q_length, dim_per_head)
+#         k = shape(self.k_lin(key))  # (bs, n_heads, k_length, dim_per_head)
+#         v = shape(self.v_lin(value))  # (bs, n_heads, k_length, dim_per_head)
+
+#         #q = q / math.sqrt(dim_per_head)  # (bs, n_heads, q_length, dim_per_head)
+#         #scores = torch.matmul(q, k.transpose(2, 3))  # (bs, n_heads, q_length, k_length)
+#         scale = self.gamma/math.sqrt(dim_per_head)
+#         scores = torch.cdist(q, k, p=1) * scale # Z
+
+#         mean = torch.mean(scores, dim = -1, keepdim = True)
+#         scores -= mean
+            
+#         #shift score
+#         if self.alpha > 0:
+#             scores += self.alpha  
+
+#         context, weights = self.compute_relu_attention(scores, mask, head_mask, v)
+#         context *= self.beta #scale context
+
+#         context = unshape(context)  # (bs, q_length, dim)
+#         context = self.out_lin(context)  # (bs, q_length, dim)
+
+#         if output_attentions:
+#             return (context, weights)
+#         else:
+#             return (context,)
+
+class iMultiHeadSelfAttention(nn.Module):
     def __init__(self, config: PretrainedConfig):
         super().__init__()
         self.config = config
@@ -154,6 +286,7 @@ class MultiHeadSelfAttention(nn.Module):
         self.q_lin = nn.Linear(in_features=config.dim, out_features=config.dim)
         self.k_lin = nn.Linear(in_features=config.dim, out_features=config.dim)
         self.v_lin = nn.Linear(in_features=config.dim, out_features=config.dim)
+        self.skibidi = nn.Linear(5, 5)
         self.out_lin = nn.Linear(in_features=config.dim, out_features=config.dim)
 
         self.gamma = 1
@@ -269,182 +402,6 @@ class MultiHeadSelfAttention(nn.Module):
             return (context,)
 
 
-class DistilBertFlashAttention2(MultiHeadSelfAttention):
-    """
-    DistilBert flash attention module. This module inherits from `MultiHeadSelfAttention` as the weights of the module
-    stays untouched. The only required change would be on the forward pass where it needs to correctly call the public
-    API of flash attention and deal with padding tokens in case the input contains any of them.
-    """
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-
-        # TODO: Should be removed once Flash Attention for RoCm is bumped to 2.1.
-        # flash_attn<2.1 generates top-left aligned causal mask, while what is needed here is bottom-right alignement, that was made default for flash_attn>=2.1. This attribute is used to handle this difference. Reference: https://github.com/Dao-AILab/flash-attention/releases/tag/v2.1.0.
-        # Beware that with flash_attn<2.1, using q_seqlen != k_seqlen (except for the case q_seqlen == 1) produces a wrong mask (top-left).
-        self._flash_attn_uses_top_left_mask = not is_flash_attn_greater_or_equal_2_10()
-
-    def forward(
-        self,
-        query: torch.Tensor,
-        key: torch.Tensor,
-        value: torch.Tensor,
-        mask: torch.Tensor,
-        head_mask: Optional[torch.Tensor] = None,
-        output_attentions: bool = False,
-    ) -> Tuple[torch.Tensor, ...]:
-        """
-        Parameters:
-            query: torch.tensor(bs, seq_length, dim)
-            key: torch.tensor(bs, seq_length, dim)
-            value: torch.tensor(bs, seq_length, dim)
-            mask: torch.tensor(bs, seq_length)
-
-        Returns:
-            weights: torch.tensor(bs, n_heads, seq_length, seq_length) Attention weights context: torch.tensor(bs,
-            seq_length, dim) Contextualized layer. Optional: only if `output_attentions=True`
-        """
-        batch_size, q_length, dim = query.size()
-
-        dim_per_head = self.dim // self.n_heads
-
-        def reshape(x: torch.Tensor) -> torch.Tensor:
-            """separate heads"""
-            return x.view(batch_size, -1, self.n_heads, dim_per_head)
-
-        # Flash attention requires the input to have the shape
-        # batch_size x seq_length x head_dim x hidden_dim
-        query_states = reshape(self.q_lin(query))
-        key_states = reshape(self.k_lin(key))
-        value_states = reshape(self.v_lin(value))
-
-        attn_dropout = self.config.attention_dropout if self.training else 0.0
-
-        # In PEFT, usually we cast the layer norms in float32 for training stability reasons
-        # therefore the input hidden states gets silently casted in float32. Hence, we need
-        # cast them back in the correct dtype just to be sure everything works as expected.
-        # This might slowdown training & inference so it is recommended to not cast the LayerNorms
-        # in fp32. (LlamaRMSNorm handles it correctly)
-
-        if query_states.dtype == torch.float32:
-            if torch.is_autocast_enabled():
-                target_dtype = torch.get_autocast_gpu_dtype()
-            # Handle the case where the model is quantized
-            elif hasattr(self.config, "_pre_quantization_dtype"):
-                target_dtype = self.config._pre_quantization_dtype
-            else:
-                target_dtype = self.q_lin.weight.dtype
-
-            logger.warning_once(
-                f"The input hidden states seems to be silently casted in float32, this might be related to"
-                f" the fact you have upcasted embedding or layer norm layers in float32. We will cast back the input in"
-                f" {target_dtype}."
-            )
-
-            query_states = query_states.to(target_dtype)
-            key_states = key_states.to(target_dtype)
-            value_states = value_states.to(target_dtype)
-
-        attn_weights = _flash_attention_forward(
-            query_states,
-            key_states,
-            value_states,
-            mask,
-            q_length,
-            dropout=attn_dropout,
-            use_top_left_mask=self._flash_attn_uses_top_left_mask,
-            is_causal=self.is_causal,
-        )
-
-        attn_weights_reshaped = attn_weights.reshape(batch_size, q_length, self.n_heads * dim_per_head)
-        attn_output = self.out_lin(attn_weights_reshaped)
-
-        if output_attentions:
-            return (attn_output, attn_weights)
-        else:
-            return (attn_output,)
-
-
-class DistilBertSdpaAttention(MultiHeadSelfAttention):
-    def __init__(self, config: PretrainedConfig):
-        super().__init__(config=config)
-        self.dropout_prob = config.attention_dropout
-        self.require_contiguous_qkv = not is_torch_greater_or_equal_than_2_2
-
-    def forward(
-        self,
-        query: torch.Tensor,
-        key: torch.Tensor,
-        value: torch.Tensor,
-        mask: torch.Tensor,
-        head_mask: Optional[torch.Tensor] = None,
-        output_attentions: bool = False,
-    ) -> Tuple[torch.Tensor, ...]:
-        """
-        Parameters:
-            query: torch.tensor(bs, seq_length, dim)
-            key: torch.tensor(bs, seq_length, dim)
-            value: torch.tensor(bs, seq_length, dim)
-            mask: torch.tensor(bs, seq_length)
-
-        Returns:
-            weights: torch.tensor(bs, n_heads, seq_length, seq_length) Attention weights context: torch.tensor(bs,
-            seq_length, dim) Contextualized layer. Optional: only if `output_attentions=True`
-        """
-        if output_attentions or head_mask is not None:
-            logger.warning_once(
-                "DistilBertSdpaAttention is used but `torch.nn.functional.scaled_dot_product_attention` does not support"
-                " `output_attentions=True` or `head_mask`. Falling back to the manual attention implementation, but specifying"
-                " the manual implementation will be required from Transformers version v5.0.0 onwards. This warning can be"
-                ' removed using the argument `attn_implementation="eager"` when loading the model.'
-            )
-            return super().forward(
-                query,
-                key,
-                value,
-                mask,
-                head_mask,
-                output_attentions,
-            )
-
-        batch_size, _, _ = query.size()
-        dim_per_head = self.dim // self.n_heads
-
-        def shape(x: torch.Tensor) -> torch.Tensor:
-            """separate heads"""
-            return x.view(batch_size, -1, self.n_heads, dim_per_head).transpose(1, 2)
-
-        def unshape(x: torch.Tensor) -> torch.Tensor:
-            """group heads"""
-            return x.transpose(1, 2).contiguous().view(batch_size, -1, self.n_heads * dim_per_head)
-
-        q = shape(self.q_lin(query))  # (bs, n_heads, q_length, dim_per_head)
-        k = shape(self.k_lin(key))  # (bs, n_heads, k_length, dim_per_head)
-        v = shape(self.v_lin(value))  # (bs, n_heads, k_length, dim_per_head)
-
-        # SDPA with memory-efficient backend is broken in torch==2.1.2 when using non-contiguous inputs and a custom
-        # attn_mask, so we need to call `.contiguous()` here. This was fixed in torch==2.2.0.
-        # Reference: https://github.com/pytorch/pytorch/issues/112577
-        if self.require_contiguous_qkv and q.device.type == "cuda" and mask is not None:
-            q = q.contiguous()
-            k = k.contiguous()
-            v = v.contiguous()
-
-        attn_output = torch.nn.functional.scaled_dot_product_attention(
-            q,
-            k,
-            v,
-            attn_mask=mask,
-            dropout_p=self.dropout_prob if self.training else 0.0,
-            is_causal=False,
-        )
-
-        attn_output = unshape(attn_output)
-        attn_output = self.out_lin(attn_output)
-
-        return (attn_output,)
-
-
 class FFN(nn.Module):
     def __init__(self, config: PretrainedConfig):
         super().__init__()
@@ -467,9 +424,7 @@ class FFN(nn.Module):
 
 
 DISTILBERT_ATTENTION_CLASSES = {
-    "eager": MultiHeadSelfAttention,
-    "flash_attention_2": DistilBertFlashAttention2,
-    "sdpa": DistilBertSdpaAttention,
+    "eager": iMultiHeadSelfAttention,
 }
 
 
@@ -700,7 +655,7 @@ DISTILBERT_INPUTS_DOCSTRING = r"""
     "The bare DistilBERT encoder/transformer outputting raw hidden-states without any specific head on top.",
     DISTILBERT_START_DOCSTRING,
 )
-class DistilBertModel(DistilBertPreTrainedModel):
+class iDistilBertModel(DistilBertPreTrainedModel):
     def __init__(self, config: PretrainedConfig):
         super().__init__(config)
 
@@ -839,7 +794,7 @@ class DistilBertModel(DistilBertPreTrainedModel):
     """DistilBert Model with a `masked language modeling` head on top.""",
     DISTILBERT_START_DOCSTRING,
 )
-class DistilBertForMaskedLM(DistilBertPreTrainedModel):
+class iDistilBertForMaskedLM(DistilBertPreTrainedModel):
     _tied_weights_keys = ["vocab_projector.weight"]
 
     def __init__(self, config: PretrainedConfig):
@@ -847,7 +802,7 @@ class DistilBertForMaskedLM(DistilBertPreTrainedModel):
 
         self.activation = get_activation(config.activation)
 
-        self.distilbert = DistilBertModel(config)
+        self.distilbert = iDistilBertModel(config)
         self.vocab_transform = nn.Linear(config.dim, config.dim)
         self.vocab_layer_norm = nn.LayerNorm(config.dim, eps=1e-12)
         self.vocab_projector = nn.Linear(config.dim, config.vocab_size)
@@ -946,13 +901,13 @@ class DistilBertForMaskedLM(DistilBertPreTrainedModel):
     """,
     DISTILBERT_START_DOCSTRING,
 )
-class DistilBertForSequenceClassification(DistilBertPreTrainedModel):
+class iDistilBertForSequenceClassification(DistilBertPreTrainedModel):
     def __init__(self, config: PretrainedConfig):
         super().__init__(config)
         self.num_labels = config.num_labels
         self.config = config
 
-        self.distilbert = DistilBertModel(config)
+        self.distilbert = iDistilBertModel(config)
         self.pre_classifier = nn.Linear(config.dim, config.dim)
         self.classifier = nn.Linear(config.dim, config.num_labels)
         self.dropout = nn.Dropout(config.seq_classif_dropout)
@@ -1063,11 +1018,11 @@ class DistilBertForSequenceClassification(DistilBertPreTrainedModel):
     """,
     DISTILBERT_START_DOCSTRING,
 )
-class DistilBertForQuestionAnswering(DistilBertPreTrainedModel):
+class iDistilBertForQuestionAnswering(DistilBertPreTrainedModel):
     def __init__(self, config: PretrainedConfig):
         super().__init__(config)
 
-        self.distilbert = DistilBertModel(config)
+        self.distilbert = iDistilBertModel(config)
         self.qa_outputs = nn.Linear(config.dim, config.num_labels)
         if config.num_labels != 2:
             raise ValueError(f"config.num_labels should be 2, but it is {config.num_labels}")
@@ -1181,12 +1136,12 @@ class DistilBertForQuestionAnswering(DistilBertPreTrainedModel):
     """,
     DISTILBERT_START_DOCSTRING,
 )
-class DistilBertForTokenClassification(DistilBertPreTrainedModel):
+class iDistilBertForTokenClassification(DistilBertPreTrainedModel):
     def __init__(self, config: PretrainedConfig):
         super().__init__(config)
         self.num_labels = config.num_labels
 
-        self.distilbert = DistilBertModel(config)
+        self.distilbert = iDistilBertModel(config)
         self.dropout = nn.Dropout(config.dropout)
         self.classifier = nn.Linear(config.hidden_size, config.num_labels)
 
@@ -1275,11 +1230,11 @@ class DistilBertForTokenClassification(DistilBertPreTrainedModel):
     """,
     DISTILBERT_START_DOCSTRING,
 )
-class DistilBertForMultipleChoice(DistilBertPreTrainedModel):
+class iDistilBertForMultipleChoice(DistilBertPreTrainedModel):
     def __init__(self, config: PretrainedConfig):
         super().__init__(config)
 
-        self.distilbert = DistilBertModel(config)
+        self.distilbert = iDistilBertModel(config)
         self.pre_classifier = nn.Linear(config.dim, config.dim)
         self.classifier = nn.Linear(config.dim, 1)
         self.dropout = nn.Dropout(config.seq_classif_dropout)
@@ -1399,11 +1354,11 @@ class DistilBertForMultipleChoice(DistilBertPreTrainedModel):
 
 
 __all__ = [
-    "DistilBertForMaskedLM",
-    "DistilBertForMultipleChoice",
-    "DistilBertForQuestionAnswering",
-    "DistilBertForSequenceClassification",
-    "DistilBertForTokenClassification",
-    "DistilBertModel",
+    "iDistilBertForMaskedLM",
+    "iDistilBertForMultipleChoice",
+    "iDistilBertForQuestionAnswering",
+    "iDistilBertForSequenceClassification",
+    "iDistilBertForTokenClassification",
+    "iDistilBertModel",
     "DistilBertPreTrainedModel",
 ]
